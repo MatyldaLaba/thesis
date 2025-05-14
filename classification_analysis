@@ -1,1 +1,452 @@
+''' This code performs augumentation and extraction of, as well as the machine learning classification ''' 
 
+# Import important datasets
+
+!pip install mne
+import os
+import mne
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.signal import welch
+import seaborn as sns
+from sklearn.model_selection import train_test_split, GridSearchCV, RepeatedStratifiedKFold, cross_validate, GroupShuffleSplit, GroupKFold
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
+from sklearn.feature_selection import mutual_info_classif, SelectKBest
+from sklearn.svm import SVC
+
+######## Load dataset with labels ########
+# Access a file containing only relevant subjects and their IAT scores and labels
+dataset_path = "/content/drive/MyDrive/Thesis/final_IAT_labeled_dataset.csv"
+
+# Load a dataset into a dataframe
+dataset = pd.read_csv(dataset_path)
+
+eeg_folder = "/content/drive/MyDrive/Thesis/LEMON/eeg data"
+
+
+######## Create functions used for data augmentation ########
+# Time reversal augmentation
+def time_reversal(x):
+    return x[:, ::-1]
+
+# Use the augmentations
+def augment_trial(x, fs=250, noise_scale=0.01, shift_ms=50, use_time_reversal=False, use_frequency_shift=False, use_channel_dropout=False, use_channel_shuffle=False):
+    # Add channel-wise Gaussian noise
+    sigma = noise_scale * x.std(axis=1, keepdims=True)
+    x_noisy = x + np.random.randn(*x.shape) * sigma
+
+    # Random circular time-shift: time shift augmentation
+    max_shift = int(shift_ms * fs / 1000)
+    shift = np.random.randint(-max_shift, max_shift)
+    x_shifted = np.roll(x_noisy, shift, axis=1)
+
+    # Apply Gaussian noise and time shift
+    x = x_shifted
+
+    if use_time_reversal:
+        x = time_reversal(x)
+    return x
+
+
+# Band power computation - the average power computed by integrating the power spectral density (PSD)
+def band_power(psd, freqs, band_range, ch_indices):
+  low_bound = freqs >= band_range[0]
+  high_bound = freqs <= band_range[1]
+  region_psd = psd[ch_indices][:, low_bound & high_bound]
+  return region_psd.mean()
+
+global_features_list = []
+region_features_list = []
+electrode_features_list = []
+missing_files = []
+
+# Define frequency bands
+delta_range = (1, 4)
+theta_range = (4, 8)
+alpha_range = (8, 13)
+beta_range  = (13, 30)
+gamma_range = (30, 45)
+
+K = 4 # number of augmented copies per subject
+
+########                  ########
+for index, row in dataset.iterrows():
+    subject = row["INDI_ID"]
+    label   = row["label"]
+    set_path = f"{eeg_folder}/{subject}/{subject}_EC.set"
+    if not os.path.exists(set_path):
+        missing_files.append(subject)
+        continue
+
+    # Load the data
+    raw = mne.io.read_raw_eeglab(set_path, preload=True)
+    raw.pick_types(eeg=True)
+    fs = int(raw.info['sfreq'])
+    data = raw.get_data()
+
+    # Loop over original and augumented data
+    for trial_data in [data] + [augment_trial(data, fs) for _ in range(K)]:
+        # Compute PSD
+        freqs, psd = welch(trial_data, fs=fs, nperseg=fs*2, axis=1)
+        psd_db = 10 * np.log10(psd)
+
+        ##################################
+        # GLOBAL-level band powers
+
+        # Perform PSD analysis
+        psd_mean = psd_db.mean(axis=0)
+        delta_power = psd_mean[(freqs>=delta_range[0])&(freqs<=delta_range[1])].mean()
+        theta_power = psd_mean[(freqs>=theta_range[0])&(freqs<=theta_range[1])].mean()
+        alpha_power = psd_mean[(freqs>=alpha_range[0])&(freqs<=alpha_range[1])].mean()
+        beta_power  = psd_mean[(freqs>=beta_range[0])&(freqs<=beta_range[1])].mean()
+        gamma_power = psd_mean[(freqs>=gamma_range[0])&(freqs<=gamma_range[1])].mean()
+
+        global_features_list.append({
+            "Subject_ID": subject,
+            "delta": delta_power,
+            "theta": theta_power,
+            "alpha": alpha_power,
+            "beta": beta_power,
+            "gamma": gamma_power,
+            "label": label
+        })
+
+        ##################################
+        # ELECTRODE‐level band powers
+        electrode_features = {"Subject_ID": subject}
+        for ch_idx, ch_name in enumerate(raw.ch_names):
+            electrode_features[f'{ch_name}_delta'] = band_power(psd_db, freqs, delta_range, [ch_idx])
+            electrode_features[f'{ch_name}_theta'] = band_power(psd_db, freqs, theta_range, [ch_idx])
+            electrode_features[f'{ch_name}_alpha'] = band_power(psd_db, freqs, alpha_range, [ch_idx])
+            electrode_features[f'{ch_name}_beta']  = band_power(psd_db, freqs, beta_range,  [ch_idx])
+            electrode_features[f'{ch_name}_gamma'] = band_power(psd_db, freqs, gamma_range, [ch_idx])
+        electrode_features["label"] = label
+        electrode_features_list.append(electrode_features)
+
+
+##################################
+# Create DataFrames from feature lists
+global_df = pd.DataFrame(global_features_list)
+electrode_df = pd.DataFrame(electrode_features_list)
+
+# Print feature columns names
+print("Global columns:", global_df.columns.tolist())
+#print("Region columns:", region_df.columns.tolist())
+print("Electrode columns:", electrode_df.columns.tolist())
+
+###################################
+# Return missing subjects
+print("Missing subjects:", missing_files)
+
+
+###################################
+
+######## Visualization for comparing distribution of each global band between IA vs. non-IA ########
+
+# Visualization of GLOBAL features
+frequency_bands = ['delta', 'theta', 'alpha', 'beta', 'gamma']
+
+fig, axes = plt.subplots(1, len(frequency_bands), figsize=(20, 6), sharex=True)
+
+# Boxplots to compare each band across labels
+for ax, band in zip(axes, frequency_bands):
+  sns.boxplot(data=global_df, x="label", y=band, ax=ax)
+  ax.set_title(f"{band} Power by Group")
+  ax.set_xlabel("Group (0 = Control, 1 = Addicted)")
+  ax.set_ylabel("Power (dB)")
+
+plt.tight_layout()
+plt.show()
+
+# Correlation matrix - to visualize how bands correlate with each other
+correlation_matrix = global_df[['delta', 'theta', 'alpha', 'beta', 'gamma', 'label']].corr()
+
+plt.figure(figsize=(8,6))
+sns.heatmap(correlation_matrix, annot=True)
+plt.title("Correlation Matrix of EEG Global Bands", fontsize=16)
+plt.xlabel("Frequency Band", fontsize=14)
+plt.ylabel("Frequency Band", fontsize=14)
+plt.tight_layout()
+plt.show()
+
+###################################
+######## Electrode-level analysis ########
+
+bands = ['delta', 'theta', 'alpha', 'beta', 'gamma']
+
+###################################
+''' Evaluation how well each individual electrode (using 5 bands) can predict IA status. This allowed us to assess which single-channel 
+band profiles were most predictive of Internet Addiction classification '''
+
+# Training SVM model for each electrode using the frequency band features.
+
+# Electrode selection - choosing only the most informative, major electrodes
+core_electrodes = ['Fz', 'Cz', 'Pz', 'Oz', 'F3', 'F4', 'C3', 'C4', 'P3', 'P4']
+
+electrodes = []
+# Check if all frequency bands are available for each electrode
+for e in core_electrodes:
+    missing_cols = [f"{e}_{b}" for b in bands if f"{e}_{b}" not in electrode_df.columns]
+    if missing_cols:
+        print(f"Skipping {e}: missing columns -> {missing_cols}")
+    else:
+        electrodes.append(e)
+
+# Define a pipeline for automatic data preprocessing
+pipeline = Pipeline([
+    ('imputer', SimpleImputer(strategy='mean')),
+    ('scaler', StandardScaler()),
+    ('svm', SVC())
+])
+
+params = {
+    'svm__kernel': ['linear', 'rbf'],
+    'svm__C': [0.1, 1, 10],
+    'svm__gamma': ['scale', 'auto']
+}
+
+X = electrode_df.copy()
+y = X['label']
+results = {}
+
+# Train a model for each electrode using that electrode's 5 frequency bands as features
+for elec in electrodes:
+    feature_cols = [f'{elec}_{b}' for b in bands]
+
+    if not all(col in X.columns for col in feature_cols):
+        continue
+
+    X_sub = X[feature_cols]
+    X_train, X_test, y_train, y_test = train_test_split(X_sub, y, stratify=y, test_size=0.2, random_state=42)
+
+    grid = GridSearchCV(pipeline, param_grid=params, cv=5, n_jobs=-1)
+    grid.fit(X_train, y_train)
+    acc = grid.score(X_test, y_test)
+
+    results[elec] = {
+        'accuracy': acc,
+        'best_params': grid.best_params_
+    }
+
+# Plot for classification accuracy per electrode
+electrode_names = list(results.keys())
+accuracies = [results[elec]['accuracy'] for elec in electrode_names]
+plt.figure(figsize=(8, 4))
+plt.bar(electrode_names, accuracies)
+plt.title('Classification Accuracy per Electrode (5 Bands)')
+plt.xlabel('Electrode')
+plt.ylabel('Accuracy')
+plt.ylim(0, 1)
+plt.grid(axis='y')
+plt.tight_layout()
+plt.show()
+
+
+# Band importance per electrode using linear SVM (which frequency bands are most predictive/relevant for each electrode)
+band_weights = {}
+
+for elec in electrodes:
+  feature_cols = [f"{elec}_{b}" for b in bands]
+
+  # Skip if any band features are missing
+  if not all(col in X.columns for col in feature_cols):
+      continue
+  # Skip if any band feature contains NaN values
+  if X[feature_cols].isnull().any().any():
+      continue
+
+  X_sub = X[feature_cols]
+  X_train, X_test, y_train, y_test = train_test_split(X_sub, y, stratify=y, test_size=0.2, random_state=42)
+
+  pipeline = Pipeline([
+      ('scaler', StandardScaler()),
+      ('svm', SVC(kernel='linear', C=1))
+  ])
+
+  # Train the model
+  pipeline.fit(X_train, y_train)
+
+  # Extract the SVM's learned weights (feature importance)
+  weights = pipeline.named_steps['svm'].coef_[0]
+
+  # Map band names to their weights for certain electrode
+  band_weights[elec] = dict(zip(bands, weights))
+
+# Convert the weight dictionary to a dataframe
+weights_df = pd.DataFrame(band_weights).T  # electrodes as rows, bands as columns
+
+# Heatmap of band importance across electrodes - so how much info per band you can get in a certain electrode
+plt.figure(figsize=(10, 6))
+sns.heatmap(weights_df, annot=True)
+# positive -> higher band predicts IA
+# negative -> higher band predict non-IA
+plt.title("SVM Band Weights per Electrode for IA prediction")
+plt.xlabel("Frequency Band")
+plt.ylabel("Electrode")
+plt.tight_layout()
+plt.show()
+
+
+###################################
+# Train Logistic Regression on global features
+
+# Define variables
+global_features = ['delta', 'theta', 'alpha', 'beta', 'gamma']
+X_global = global_df[global_features]
+y = global_df['label']
+groups = global_df['Subject_ID']
+
+# Subject wise split: hold out 20% of the subjects for testing
+gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+for train_idx, test_idx in gss.split(X_global, y, groups=groups):
+    X_train, X_test = X_global.iloc[train_idx], X_global.iloc[test_idx]
+    y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+    groups_train = groups.iloc[train_idx]
+
+# Logistic Regression pipeline
+pipeline_logreg = Pipeline([
+    ('scaler', StandardScaler()),
+    ('logreg', LogisticRegression(max_iter=1000, random_state=42))
+])
+
+# Hyperparameter grid
+param_grid = {
+    'logreg__C': [0.01, 0.1, 1, 10, 100],
+    'logreg__penalty': ['l2'],
+    'logreg__solver': ['lbfgs', 'liblinear', 'saga'],
+}
+
+inner_cv = GroupKFold(n_splits=5)
+# Grid search
+grid_logreg = GridSearchCV(
+    pipeline_logreg,
+    param_grid=param_grid,
+    cv=inner_cv,
+    n_jobs=-1)
+
+grid_logreg.fit(X_train, y_train, groups=groups_train)
+
+# Evaluation
+print("Best parameters: ", grid_logreg.best_params_)
+print("Best cross-validation score: ", grid_logreg.best_score_)
+
+y_pred = grid_logreg.best_estimator_.predict(X_test)
+print("Classification report for tuned Logistic Regression:")
+print(classification_report(y_test, y_pred))
+ConfusionMatrixDisplay(confusion_matrix(y_test, y_pred), display_labels=['Control', 'Addicted']).plot()
+
+
+
+###################################
+# Train SVM on global features
+# Define variables
+global_features = ['delta', 'theta', 'alpha', 'beta', 'gamma']
+X_global = global_df[global_features]
+y = global_df['label']
+groups = global_df['Subject_ID']
+
+# Subject wise split: hold out 20% of the subjects for testing
+gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+for train_idx, test_idx in gss.split(X_global, y, groups=groups):
+    X_train, X_test = X_global.iloc[train_idx], X_global.iloc[test_idx]
+    y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+    groups_train = groups.iloc[train_idx]
+
+# SVM pipeline
+pipeline = Pipeline([
+    ('scaler', StandardScaler()),
+    ('svm',     SVC())
+])
+
+# Hyperparameter grid
+param_grid = {
+    'svm__kernel': ['linear', 'rbf'],
+    'svm__C': [0.01, 0.1, 1, 10, 100],
+    'svm__gamma': ['scale', 'auto']
+}
+
+inner_cv = GroupKFold(n_splits=5)
+
+# Grid search
+grid_SVM = GridSearchCV(
+    pipeline,
+    param_grid=param_grid,
+    cv=inner_cv,
+    n_jobs=-1
+)
+
+grid_SVM.fit(X_train, y_train, groups=groups_train)
+
+# Evaluatoin
+print("Best parameters:", grid_SVM.best_params_)
+print("Best CV score (by subject):", grid_SVM.best_score_)
+
+y_pred = grid_SVM.best_estimator_.predict(X_test)
+print(classification_report(y_test, y_pred))
+ConfusionMatrixDisplay.from_predictions(y_test, y_pred, display_labels=['Control','Addicted']).plot();
+plt.show()
+
+
+###################################
+# Use the best estimator found by GridSearchCV
+outer_cv = GroupShuffleSplit(n_splits=5, test_size=0.2, random_state=42)
+
+cv_results = cross_validate(
+    grid_SVM.best_estimator_,
+    X_global,
+    y,
+    cv=outer_cv,
+    groups=groups,
+    scoring = ['accuracy', 'f1', 'precision', 'recall']
+)
+
+print("Cross-Validated Metrics (Global):")
+print(f"Accuracy : {cv_results['test_accuracy'].mean():.2f} ± {cv_results['test_accuracy'].std():.2f}")
+print(f"F1-Score : {cv_results['test_f1'].mean():.2f} ± {cv_results['test_f1'].std():.2f}")
+print(f"Precision: {cv_results['test_precision'].mean():.2f} ± {cv_results['test_precision'].std():.2f}")
+print(f"Recall   : {cv_results['test_recall'].mean():.2f} ± {cv_results['test_recall'].std():.2f}")
+
+###################################
+# Calculating feature weights on global features - feature importance
+
+# Get feature names and SVM weights
+feature_names = global_features  # Already defined: ['delta', 'theta', 'alpha', 'beta', 'gamma']
+weights = grid_SVM.best_estimator_.named_steps['svm'].coef_[0]
+
+# Zip into dictionary
+feature_weights = dict(zip(feature_names, weights))
+
+# Create DataFrame
+import pandas as pd
+global_importance_df = pd.DataFrame({
+    'Feature': feature_weights.keys(),
+    'Weight': feature_weights.values()
+})
+global_importance_df['AbsWeight'] = global_importance_df['Weight'].abs()
+
+# Plot
+plt.figure(figsize=(8, 4))
+plt.barh(global_importance_df['Feature'], global_importance_df['Weight'])
+plt.axvline(0, color='gray', linestyle='--')
+plt.title('SVM Feature Weights for Global EEG Frequency Bands (Addiction Classification)')
+plt.xlabel('Weight')
+plt.ylabel('EEG Frequency Band')
+plt.tight_layout()
+plt.show()
+
+# Print their precise values
+for index, row in global_importance_df.iterrows():
+  feature = row['Feature']
+  weight = row['Weight']
+  print("{}: {:.2f}".format(feature, weight))
+
+# Pairplot to show relationships between the EEG bands and label
+sns.pairplot(global_df[['delta', 'theta', 'alpha', 'beta', 'gamma', 'label']], hue='label', palette='coolwarm')
+plt.suptitle("Pairwise Plot of EEG Bands", fontsize=16)
+plt.tight_layout()
+plt.show()
