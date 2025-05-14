@@ -1,1 +1,54 @@
+import pandas as pd
+from google.colab import files
 
+''' Open the files with participants
+FCPD (functional connectome phenotyping dataset) with initial_ID and IAT scores
+LEMON with indi_ID '''
+
+name_match_path = "/content/drive/MyDrive/Thesis/LEMON/name_match.csv"
+lemon_path = "/content/drive/MyDrive/Thesis/LEMON/LEMON_participants.csv"
+fcpd_iat_path = "/content/drive/MyDrive/Thesis/FCPD/FCPD_IAT_participants.csv"
+
+fcpd_iat_df = pd.read_csv(fcpd_iat_path)
+lemon_df = pd.read_csv(lemon_path)
+name_match_df = pd.read_csv(name_match_path)
+
+# Examine the datasets
+print("FCPD")
+print (fcpd_iat_df.head())
+print("LEMON")
+print (lemon_df.head())
+
+# Merge LEMON names with name_match
+lemon_merged = pd.merge(lemon_df, name_match_df, on="INDI_ID", how="left") # merging on INDI_ID, keeping left dataframe - lemon, so add columns from the right (name_match) only if there is a match
+print("Length: ", len(lemon_merged))
+print(lemon_merged.head())
+
+# Merge LEMON and fcpd
+lemon_final = pd.merge(lemon_merged, fcpd_iat_df, on="Initial_ID", how="inner") # inner - keeping rows that exists in both
+print("Length: ", len(lemon_final))
+print(lemon_final.head())
+
+# Keep participants with only valid IAT scores (>=19) (the minimum score to be even considered valid)
+lemon_valid = lemon_final[lemon_final["IAT_sum"] >= 19].reset_index(drop=True)
+print("Length: ", len(lemon_valid))
+print(lemon_valid[["INDI_ID", "Initial_ID", "IAT_sum"]])
+
+# Select extreme IAT scores
+low = lemon_valid[(lemon_valid["IAT_sum"] >= 19) & (lemon_valid["IAT_sum"] <= 23)]
+high = lemon_valid[(lemon_valid["IAT_sum"] >= 37) & (lemon_valid["IAT_sum"] <= 59)]
+
+low = low.head(25)
+high = high.head(24)
+
+# Label 24 highest scores (37-59) as addicted (1) and 25 lowest scores (19-23) as healthy (0) in final dataset
+low["label"] = 0
+high["label"] = 1
+
+final = pd.concat([low, high])
+final = final.reset_index(drop=True)
+print(final)
+
+final = final.drop(columns=["Initial_ID"])
+final.to_csv("final_IAT_labeled_dataset.csv", index=False)
+files.download("final_IAT_labeled_dataset.csv")
