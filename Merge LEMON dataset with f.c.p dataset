@@ -37,7 +37,6 @@ print(lemon_valid[["INDI_ID", "Initial_ID", "IAT_sum"]])
 # Select extreme IAT scores
 low = lemon_valid[(lemon_valid["IAT_sum"] >= 19) & (lemon_valid["IAT_sum"] <= 23)]
 high = lemon_valid[(lemon_valid["IAT_sum"] >= 37) & (lemon_valid["IAT_sum"] <= 59)]
-
 low = low.head(25)
 high = high.head(24)
 
@@ -45,10 +44,14 @@ high = high.head(24)
 low["label"] = 0
 high["label"] = 1
 
+# Combine the two 'labels' into a final dataset
 final = pd.concat([low, high])
 final = final.reset_index(drop=True)
 print(final)
 
+# Drop the initial_id column as it is no longer needed in the final dataset
 final = final.drop(columns=["Initial_ID"])
+
+# Save the final dataset to csv file and download
 final.to_csv("final_IAT_labeled_dataset.csv", index=False)
 files.download("final_IAT_labeled_dataset.csv")
