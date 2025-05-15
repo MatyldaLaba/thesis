@@ -1,7 +1,6 @@
 ''' This code performs augumentation and extraction of, as well as the machine learning classification ''' 
 
 # Import important datasets
-
 !pip install mne
 import os
 import mne
@@ -74,7 +73,7 @@ gamma_range = (30, 45)
 
 K = 4 # number of augmented copies per subject
 
-########                  ########
+######## EEG data loading, augmentation and feature extraction loop ########
 for index, row in dataset.iterrows():
     subject = row["INDI_ID"]
     label   = row["label"]
