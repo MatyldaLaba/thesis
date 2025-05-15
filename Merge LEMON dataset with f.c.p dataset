@@ -1,5 +1,6 @@
 import pandas as pd
-from google.colab import files
+from google.colab import files, drive
+drive.mount('/content/drive')
 
 ''' Open the files with participants
 FCPD (functional connectome phenotyping dataset) with initial_ID and IAT scores
