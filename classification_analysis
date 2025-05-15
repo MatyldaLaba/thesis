@@ -1,6 +1,8 @@
 ''' This code performs augumentation and extraction of, as well as the machine learning classification ''' 
 
 # Import important datasets
+from google.colab import drive
+drive.mount('/content/drive')
 !pip install mne
 import os
 import mne
