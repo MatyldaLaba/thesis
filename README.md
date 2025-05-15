@@ -9,8 +9,8 @@ This thesis investigates neural markers of Internet Addiction (IA) by analyzing 
 
 ## DATASETS
 
-LEMON Dataset: resting-state EEG data collected from 216 healthy participants using a 62-channel EEG system
-Functional Connectome Phenotyping Dataset: provides behavioral assessments, including IAT scores
+LEMON Dataset: resting-state EEG data collected from 216 healthy participants using a 62-channel EEG system (https://fcon_1000.projects.nitrc.org/indi/retro/MPI_LEMON.html)
+Functional Connectome Phenotyping Dataset: provides behavioral assessments, including IAT scores (https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/VMJ6NV)
 
 ## METHODOLOGY
 
