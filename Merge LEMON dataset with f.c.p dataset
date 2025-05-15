@@ -3,7 +3,8 @@ from google.colab import files
 
 ''' Open the files with participants
 FCPD (functional connectome phenotyping dataset) with initial_ID and IAT scores
-LEMON with indi_ID '''
+LEMON with indi_ID (they have different participant ID type so using name_match file we're combining them into a meaningful whole '''
+
 
 name_match_path = "/content/drive/MyDrive/Thesis/LEMON/name_match.csv"
 lemon_path = "/content/drive/MyDrive/Thesis/LEMON/LEMON_participants.csv"
